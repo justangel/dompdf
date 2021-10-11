@@ -7,7 +7,6 @@
  */
 namespace Dompdf\FrameReflower;
 
-use Dompdf\Css\Style;
 use Dompdf\Dompdf;
 use Dompdf\Helpers;
 use Dompdf\Frame;
@@ -263,12 +262,12 @@ abstract class AbstractFrameReflower
             $inline_max = 0;
 
             // Add all adjacent inline widths together to calculate max width
-            while ($iter->valid() && in_array($iter->current()->get_style()->display, Style::$INLINE_TYPES)) {
+            while ($iter->valid() && ($iter->current()->is_inline_level() || $iter->current()->get_style()->display === "-dompdf-image")) {
                 $child = $iter->current();
                 $child->get_reflower()->_set_content();
                 $minmax = $child->get_min_max_width();
 
-                if (in_array($iter->current()->get_style()->white_space, ["pre", "nowrap"])) {
+                if (in_array($child->get_style()->white_space, ["pre", "nowrap"], true)) {
                     $inline_min += $minmax["min"];
                 } else {
                     $low[] = $minmax["min"];
