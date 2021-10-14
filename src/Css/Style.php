@@ -276,11 +276,17 @@ class Style
     private $_computed_bottom_spacing = null;
 
     /**
-     * The computed border radius
+     * @var bool
      */
-    private $_computed_border_radius = null;
+    private $has_border_radius_cache = null;
 
     /**
+     * @var array
+     */
+    private $resolved_border_radius = null;
+
+    /**
+     * @deprecated
      * @var bool
      */
     public $_has_border_radius = false;
@@ -1502,50 +1508,122 @@ class Style
     }
 
     /**
-     * @param $w
-     * @param $h
-     * @return array|null
+     * @deprecated
+     * @param float $w
+     * @param float $h
+     * @return float[]
      */
     function get_computed_border_radius($w, $h)
     {
-        if (!empty($this->_computed_border_radius)) {
-            return $this->_computed_border_radius;
+        return $this->resolve_border_radius([0, 0, $w, $h]);
+    }
+
+    public function has_border_radius(): bool
+    {
+        if (isset($this->has_border_radius_cache)) {
+            return $this->has_border_radius_cache;
         }
 
-        $w = (float)$w;
-        $h = (float)$h;
-        $rTL = (float)$this->__get("border_top_left_radius");
-        $rTR = (float)$this->__get("border_top_right_radius");
-        $rBL = (float)$this->__get("border_bottom_left_radius");
-        $rBR = (float)$this->__get("border_bottom_right_radius");
+        // Use a fixed ref size here. We don't know the border-box width here
+        // and font size might be 0. Since we are only interested in whether
+        // there is any border radius at all, this should do
+        $tl = (float) $this->length_in_pt($this->border_top_left_radius, 10);
+        $tr = (float) $this->length_in_pt($this->border_top_right_radius, 10);
+        $br = (float) $this->length_in_pt($this->border_bottom_right_radius, 10);
+        $bl = (float) $this->length_in_pt($this->border_bottom_left_radius, 10);
 
-        if ($rTL + $rTR + $rBL + $rBR == 0) {
-            return $this->_computed_border_radius = [
-                0, 0, 0, 0,
-                "top-left" => 0,
-                "top-right" => 0,
-                "bottom-right" => 0,
-                "bottom-left" => 0,
-            ];
+        $this->has_border_radius_cache = $tl + $tr + $br + $bl > 0;
+        return $this->has_border_radius_cache;
+    }
+
+    /**
+     * Get the final border-radius values to use.
+     *
+     * Percentage values are resolved relative to the width of the border box.
+     * The border radius is additionally scaled for the shape box, and
+     * constrained by its width and height.
+     *
+     * @param float[]      $border_box The border box of the frame.
+     * @param float[]|null $shape_box  The box to resolve the border radius for.
+     *
+     * @return float[] A 4-tuple of top-left, top-right, bottom-right, and bottom-left radius.
+     */
+    public function resolve_border_radius(
+        array $border_box,
+        ?array $shape_box = null
+    ): array {
+        $shape_box = $shape_box ?? $border_box;
+        $use_cache = $shape_box === $border_box;
+
+        if ($use_cache && isset($this->resolved_border_radius)) {
+            return $this->resolved_border_radius;
         }
 
-        $t = (float)$this->__get("border_top_width");
-        $r = (float)$this->__get("border_right_width");
-        $b = (float)$this->__get("border_bottom_width");
-        $l = (float)$this->__get("border_left_width");
+        [$x, $y, $w, $h] = $border_box;
 
-        $rTL = min($rTL, $h - $rBL - $t / 2 - $b / 2, $w - $rTR - $l / 2 - $r / 2);
-        $rTR = min($rTR, $h - $rBR - $t / 2 - $b / 2, $w - $rTL - $l / 2 - $r / 2);
-        $rBL = min($rBL, $h - $rTL - $t / 2 - $b / 2, $w - $rBR - $l / 2 - $r / 2);
-        $rBR = min($rBR, $h - $rTR - $t / 2 - $b / 2, $w - $rBL - $l / 2 - $r / 2);
+        $w = (float) $w;
+        $h = (float) $h;
 
-        return $this->_computed_border_radius = [
-            $rTL, $rTR, $rBR, $rBL,
-            "top-left" => $rTL,
-            "top-right" => $rTR,
-            "bottom-right" => $rBR,
-            "bottom-left" => $rBL,
-        ];
+        // Resolve percentages relative to width, as long as we have no support
+        // for per-axis radii
+        $tl = (float) $this->length_in_pt($this->border_top_left_radius, $w);
+        $tr = (float) $this->length_in_pt($this->border_top_right_radius, $w);
+        $br = (float) $this->length_in_pt($this->border_bottom_right_radius, $w);
+        $bl = (float) $this->length_in_pt($this->border_bottom_left_radius, $w);
+
+        if ($tl + $tr + $br + $bl > 0) {
+            [$sx, $sy, $sw, $sh] = $shape_box;
+
+            $sw = (float) $sw;
+            $sh = (float) $sh;
+
+            $t_offset = $y - $sy;
+            $r_offset = $sx + $sw - $x - $w;
+            $b_offset = $sy + $sh - $y - $h;
+            $l_offset = $x - $sx;
+
+            if ($tl > 0) {
+                $tl = max($tl + ($t_offset + $l_offset) / 2, 0);
+            }
+            if ($tr > 0) {
+                $tr = max($tr + ($t_offset + $r_offset) / 2, 0);
+            }
+            if ($br > 0) {
+                $br = max($br + ($b_offset + $r_offset) / 2, 0);
+            }
+            if ($bl > 0) {
+                $bl = max($bl + ($b_offset + $l_offset) / 2, 0);
+            }
+
+            if ($tl + $bl > $sh) {
+                $f = $sh / ($tl + $bl);
+                $tl = $f * $tl;
+                $bl = $f * $bl;
+            }
+            if ($tr + $br > $sh) {
+                $f = $sh / ($tr + $br);
+                $tr = $f * $tr;
+                $br = $f * $br;
+            }
+            if ($tl + $tr > $sw) {
+                $f = $sw / ($tl + $tr);
+                $tl = $f * $tl;
+                $tr = $f * $tr;
+            }
+            if ($bl + $br > $sw) {
+                $f = $sw / ($bl + $br);
+                $bl = $f * $bl;
+                $br = $f * $br;
+            }
+        }
+
+        $values = [$tl, $tr, $br, $bl];
+
+        if ($use_cache) {
+            $this->resolved_border_radius = $values;
+        }
+
+        return $values;
     }
 
     /**
@@ -2745,6 +2823,7 @@ class Style
      */
     protected function _set_border_radius_corner($val, $corner)
     {
+        $this->has_border_radius = null;
         $this->_has_border_radius = true;
 
         $this->_props["border_" . $corner . "_radius"] = $val;
@@ -2796,11 +2875,13 @@ class Style
      */
     protected function _get_border_radius_corner($corner)
     {
-        if (!isset($this->_props_computed["border_" . $corner . "_radius"]) || empty($this->_props_computed["border_" . $corner . "_radius"])) {
+        $prop = "border_" . $corner . "_radius";
+
+        if (!isset($this->_props_computed[$prop]) || empty($this->_props_computed[$prop])) {
             return 0;
         }
 
-        return $this->length_in_pt($this->_props_computed["border_" . $corner . "_radius"]);
+        return $this->_props_computed[$prop];
     }
 
     /**
